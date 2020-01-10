@@ -1,0 +1,112 @@
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: conntrack-exporter
+  namespace: monitoring
+  labels:
+    k8s-app: conntrack-exporter
+spec:
+  template:
+    metadata:
+      labels:
+        k8s-app: conntrack-exporter
+    spec:
+      serviceAccount: conntrack
+      hostNetwork: true
+      tolerations:
+      - operator: Exists
+      containers:
+      - image: baizhi/conntrack:latest
+        securityContext:
+          privileged: true
+        resources:
+          limits:
+            cpu: 200m
+            memory: 200Mi
+          requests:
+            cpu: 20m
+            memory: 100Mi
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        imagePullPolicy: Always
+        name: conntrack-exporter
+        volumeMounts:
+        - mountPath: /proc
+          name: proc
+      volumes:
+      - name: proc
+        hostPath:
+         path: /proc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: conntrack
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: conntrack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+- kind: ServiceAccount
+  name: conntrack
+  namespace: monitoring
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    k8s-app: conntrack-exporter
+  name: conntrack-exporter
+  namespace: monitoring
+spec:
+  ports:
+  - name: http
+    port: 10086
+    protocol: TCP
+    targetPort: 10086
+  selector:
+    k8s-app: conntrack-exporter
+  type: ClusterIP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    system-app: "true"
+  name: conntrack-exporter
+  namespace: monitoring
+spec:
+  endpoints:
+  - path: /metrics
+    port: http
+  namespaceSelector:
+    matchNames:
+    - monitoring
+  selector:
+    matchLabels:
+      k8s-app: conntrack-exporter
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: conntrack-exporter
+  namespace: monitoring
+spec:
+  rules:
+  - host: conntrack-exporter.qttcs2.cn
+    http:
+      paths:
+      - backend:
+          serviceName: conntrack-exporter
+          servicePort: 10086
+        path: /

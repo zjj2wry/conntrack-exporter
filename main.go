@@ -1,0 +1,187 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"net/http/pprof"
+	"os"
+	"strconv"
+
+	"github.com/cmattoon/conntrackr/conntrack"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+const (
+	nfConntrackMax   = "/proc/sys/net/netfilter/nf_conntrack_max"
+	nfConntrackCount = "/proc/sys/net/netfilter/nf_conntrack_count"
+	nfConntrackStat  = "/proc/net/stat/nf_conntrack"
+	nfConntrackList  = "/proc/net/nf_conntrack"
+)
+
+var (
+	statMetrics = []string{
+		"entries",
+		"searched",
+		"found",
+		"new",
+		"invalid",
+		"ignore",
+		"delete",
+		"delete_list",
+		"insert",
+		"insert_failed",
+		"drop",
+		"early_drop",
+		"icmp_error",
+		"expect_new",
+		"expect_create",
+		"expect_delete",
+		"search_restart"}
+
+	nodeNfConntrackMax = prometheus.NewDesc(
+		"node_nf_conntrack_max",
+		"",
+		[]string{"node"},
+		nil,
+	)
+
+	nodeNfConntrackCount = prometheus.NewDesc(
+		"node_nf_conntrack_count",
+		"",
+		[]string{"node"},
+		nil,
+	)
+
+	nodeNfConntrackList = prometheus.NewDesc(
+		"node_nf_conntrack_entrylist",
+		"",
+		[]string{"src", "des", "state", "assured", "protocal", "node"},
+		nil,
+	)
+)
+
+func main() {
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		panic("node name can not be empty, NODE_NAME environment variable should be passed through kubernetes downward api")
+	}
+	flag.Parse()
+
+	statMetricsMap := make(map[string]*prometheus.Desc, 0)
+	for _, metricsName := range statMetrics {
+		statMetricsMap[metricsName] = prometheus.NewDesc(
+			fmt.Sprintf("node_nf_conntrack_stat_%s", metricsName),
+			"",
+			[]string{"node", "cpu"},
+			nil,
+		)
+	}
+
+	ctk := &Conntrack{
+		NodeName:    nodeName,
+		StatMetrics: statMetricsMap,
+	}
+
+	prometheus.MustRegister(ctk)
+	server := http.NewServeMux()
+	server.Handle("/metrics", promhttp.Handler())
+	server.HandleFunc("/debug/pprof/", pprof.Index)
+	server.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	server.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	server.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	server.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	err := http.ListenAndServe(":10086", server)
+	if err != nil {
+		panic(err)
+	}
+}
+
+type Conntrack struct {
+	NodeName    string
+	StatMetrics map[string]*prometheus.Desc
+}
+
+func (o *Conntrack) Describe(ch chan<- *prometheus.Desc) {
+	ch <- nodeNfConntrackMax
+	ch <- nodeNfConntrackCount
+	ch <- nodeNfConntrackList
+	for _, des := range o.StatMetrics {
+		ch <- des
+	}
+}
+
+type label struct {
+	Src      string
+	Dst      string
+	Protocal string
+	State    string
+	Assured  string
+}
+
+func (o *Conntrack) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(nodeNfConntrackMax, prometheus.GaugeValue,
+		float64(conntrack.GetUint32FromFile(nfConntrackMax)), o.NodeName)
+	ch <- prometheus.MustNewConstMetric(nodeNfConntrackCount, prometheus.GaugeValue,
+		float64(conntrack.GetUint32FromFile(nfConntrackCount)), o.NodeName)
+
+	res, err := conntrack.Stat(nfConntrackStat)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	for _, stat := range res.Items {
+		statMap := toMap(stat)
+		for name, des := range o.StatMetrics {
+			ch <- prometheus.MustNewConstMetric(des, prometheus.CounterValue,
+				statMap[name], o.NodeName, strconv.Itoa(stat.Id))
+		}
+	}
+
+	entryList, err := conntrack.GetConnections(nfConntrackList)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	entryMap := make(map[label][]conntrack.Entry, 0)
+	for _, entry := range entryList.Items {
+		key := label{
+			Src:      entry.Outbound.Src.Addr,
+			Dst:      entry.Outbound.Dst.Addr,
+			State:    entry.State,
+			Assured:  strconv.FormatBool(entry.IsAssured),
+			Protocal: entry.TxProto,
+		}
+		entryMap[key] = append(entryMap[key], *entry)
+	}
+
+	for label, entries := range entryMap {
+		ch <- prometheus.MustNewConstMetric(nodeNfConntrackList, prometheus.GaugeValue,
+			float64(len(entries)), label.Src, label.Dst, label.State, label.Assured, label.Protocal, o.NodeName)
+	}
+}
+
+func toMap(stat *conntrack.StatResult) map[string]float64 {
+	statMap := make(map[string]float64, 0)
+
+	statMap["entries"] = float64(stat.Entries)
+	statMap["searched"] = float64(stat.Searched)
+	statMap["found"] = float64(stat.Found)
+	statMap["new"] = float64(stat.New)
+	statMap["invalid"] = float64(stat.Invalid)
+	statMap["ignore"] = float64(stat.Ignore)
+	statMap["delete"] = float64(stat.Delete)
+	statMap["delete_list"] = float64(stat.DeleteList)
+	statMap["insert"] = float64(stat.Insert)
+	statMap["insert_failed"] = float64(stat.InsertFailed)
+	statMap["drop"] = float64(stat.Drop)
+	statMap["early_drop"] = float64(stat.EarlyDrop)
+	statMap["icmp_error"] = float64(stat.IcmpError)
+	statMap["expect_new"] = float64(stat.ExpectNew)
+	statMap["expect_create"] = float64(stat.ExpectCreate)
+	statMap["expect_delete"] = float64(stat.ExpectDelete)
+	statMap["search_restart"] = float64(stat.SearchRestart)
+	return statMap
+}
