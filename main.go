@@ -12,6 +12,10 @@ import (
 	"github.com/cmattoon/conntrackr/conntrack"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/zjj2wry/conntrack-exporter/controller"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -22,6 +26,7 @@ const (
 )
 
 var (
+	kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	statMetrics = []string{
 		"entries",
 		"searched",
@@ -70,6 +75,25 @@ func main() {
 	}
 	flag.Parse()
 
+	// use the current context in kubeconfig
+	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	// create the clientset
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	factory := informers.NewSharedInformerFactory(clientset, 0)
+	ep := factory.Core().V1().Endpoints()
+	stop := make(chan struct{})
+
+	ctl := controller.NewIPAliasController(ep)
+	go ctl.Run(1, stop)
+
 	statMetricsMap := make(map[string]*prometheus.Desc, 0)
 	for _, metricsName := range statMetrics {
 		statMetricsMap[metricsName] = prometheus.NewDesc(
@@ -93,7 +117,7 @@ func main() {
 	server.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	server.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	server.HandleFunc("/debug/pprof/trace", pprof.Trace)
-	err := http.ListenAndServe(":10086", server)
+	err = http.ListenAndServe(":10086", server)
 	if err != nil {
 		panic(err)
 	}
