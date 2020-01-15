@@ -11,6 +11,15 @@ spec:
       labels:
         k8s-app: conntrack-exporter
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: NotIn
+                values:
+                - virtual-kubelet
       serviceAccount: conntrack
       hostNetwork: true
       tolerations:
@@ -96,18 +105,3 @@ spec:
   selector:
     matchLabels:
       k8s-app: conntrack-exporter
----
-apiVersion: extensions/v1beta1
-kind: Ingress
-metadata:
-  name: conntrack-exporter
-  namespace: monitoring
-spec:
-  rules:
-  - host: conntrack-exporter.qttcs2.cn
-    http:
-      paths:
-      - backend:
-          serviceName: conntrack-exporter
-          servicePort: 10086
-        path: /
