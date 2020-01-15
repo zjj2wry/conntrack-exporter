@@ -113,7 +113,8 @@ metadata:
   namespace: monitoring
 spec:
   rules:
-  - host: conntrack-exporter.5qtt.cn
+  # - host: conntrack-exporter.5qtt.cn
+  - host: conntrack-exporter.qttcs2.cn
     http:
       paths:
       - backend:

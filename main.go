@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/cmattoon/conntrackr/conntrack"
+	"github.com/mdlayher/netlink"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	conntrack2 "github.com/ti-mo/conntrack"
+	"github.com/ti-mo/netfilter"
 	"github.com/zjj2wry/conntrack-exporter/controller"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -67,7 +70,7 @@ var (
 			Subsystem: "nf_conntrack",
 			Name:      "entrylist",
 		},
-		[]string{"src", "des", "state", "assured", "protocal", "node", "src_namespace", "src_kind", "des_namespace", "des_kind", "src_ip", "des_ip"},
+		[]string{"src", "des", "protocal", "node", "src_namespace", "src_kind", "des_namespace", "des_kind", "src_ip", "des_ip"},
 	)
 )
 
@@ -118,12 +121,10 @@ func main() {
 	}
 
 	prometheus.MustRegister(ctk)
-	go func() {
-		for {
-			ctk.collectConntrackList()
-			time.Sleep(60 * time.Second)
-		}
-	}()
+
+	ctk.collectConntrackList()
+	ctk.event()
+
 	server := http.NewServeMux()
 	server.Handle("/metrics", promhttp.Handler())
 	server.HandleFunc("/debug/pprof/", pprof.Index)
@@ -157,7 +158,6 @@ type label struct {
 	Dst      string
 	Protocal string
 	State    string
-	Assured  string
 }
 
 func (o *Conntrack) Collect(ch chan<- prometheus.Metric) {
@@ -190,33 +190,36 @@ func (o *Conntrack) collectConntrackList() {
 			Src:      entry.Outbound.Src.Addr,
 			Dst:      entry.Outbound.Dst.Addr,
 			State:    entry.State,
-			Assured:  strconv.FormatBool(entry.IsAssured),
 			Protocal: entry.TxProto,
 		}
 		entryMap[key] = append(entryMap[key], *entry)
 	}
 
 	for label, entries := range entryMap {
-		srcRes := o.Ctrl.Get(label.Src)
-		src := label.Src
-		srcNamespace := ""
-		srcKind := ""
-		if srcRes != nil {
-			src = srcRes.Name
-			srcNamespace = srcRes.Namespace
-			srcKind = srcRes.Kind
-		}
-		dstRes := o.Ctrl.Get(label.Dst)
-		dst := label.Dst
-		dstNamespace := ""
-		dstKind := ""
-		if dstRes != nil {
-			dst = dstRes.Name
-			dstNamespace = dstRes.Namespace
-			dstKind = dstRes.Kind
-		}
-		nodeNfConntrackList.WithLabelValues(src, dst, label.State, label.Assured, label.Protocal, o.NodeName, srcNamespace, srcKind, dstNamespace, dstKind, label.Src, label.Dst).Set(float64(len(entries)))
+		nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(label.Src, label.Dst, label.Protocal)...).Set(float64(len(entries)))
 	}
+}
+
+func (o *Conntrack) conntrackListLabels(srcIP, dstIP, protocal string) []string {
+	srcRes := o.Ctrl.Get(srcIP)
+	src := srcIP
+	srcNamespace := ""
+	srcKind := ""
+	if srcRes != nil {
+		src = srcRes.Name
+		srcNamespace = srcRes.Namespace
+		srcKind = srcRes.Kind
+	}
+	dstRes := o.Ctrl.Get(dstIP)
+	dst := dstIP
+	dstNamespace := ""
+	dstKind := ""
+	if dstRes != nil {
+		dst = dstRes.Name
+		dstNamespace = dstRes.Namespace
+		dstKind = dstRes.Kind
+	}
+	return []string{src, dst, protocal, o.NodeName, srcNamespace, srcKind, dstNamespace, dstKind, srcIP, dstIP}
 }
 
 func (o *Conntrack) collectConntrackStat(ch chan<- prometheus.Metric) {
@@ -255,4 +258,75 @@ func toMap(stat *conntrack.StatResult) map[string]float64 {
 	statMap["expect_delete"] = float64(stat.ExpectDelete)
 	statMap["search_restart"] = float64(stat.SearchRestart)
 	return statMap
+}
+
+func (o *Conntrack) event() {
+	// Open a Conntrack connection.
+	c, err := conntrack2.Dial(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Make a buffered channel to receive event updates on.
+	evCh := make(chan conntrack2.Event, 1024)
+
+	// Listen for all Conntrack and Conntrack-Expect events with 4 decoder goroutines.
+	// All errors caught in the decoders are passed on channel errCh.
+	_, err = c.Listen(evCh, 4, []netfilter.NetlinkGroup{netfilter.GroupCTNew, netfilter.GroupCTDestroy})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Listen to Conntrack events from all network namespaces on the system.
+	err = c.SetOption(netlink.ListenAllNSID, true)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Start a goroutine to print all incoming messages on the event channel.
+	go func() {
+		for {
+			e := <-evCh
+			switch e.Type {
+			case conntrack2.EventNew:
+				src := e.Flow.TupleOrig.IP.SourceAddress.String()
+				des := e.Flow.TupleOrig.IP.DestinationAddress.String()
+				protocal := protoLookup(e.Flow.TupleOrig.Proto.Protocol)
+				nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(src, des, protocal)...).Inc()
+			// case conntrack2.EventNew:
+
+			case conntrack2.EventDestroy:
+				src := e.Flow.TupleOrig.IP.SourceAddress.String()
+				des := e.Flow.TupleOrig.IP.DestinationAddress.String()
+				protocal := protoLookup(e.Flow.TupleOrig.Proto.Protocol)
+				nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(src, des, protocal)...).Dec()
+
+			default:
+				fmt.Printf("I don't know about type %v", e.Type)
+			}
+		}
+	}()
+}
+
+// protoLookup translates a protocol integer into its string representation.
+func protoLookup(p uint8) string {
+	protos := map[uint8]string{
+		1:   "icmp",
+		2:   "igmp",
+		6:   "tcp",
+		17:  "udp",
+		33:  "dccp",
+		47:  "gre",
+		58:  "ipv6-icmp",
+		94:  "ipip",
+		115: "l2tp",
+		132: "sctp",
+		136: "udplite",
+	}
+
+	if val, ok := protos[p]; ok {
+		return val
+	}
+
+	return strconv.FormatUint(uint64(p), 10)
 }
