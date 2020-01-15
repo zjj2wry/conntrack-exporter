@@ -8,6 +8,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/cmattoon/conntrackr/conntrack"
 	"github.com/prometheus/client_golang/prometheus"
@@ -60,11 +61,13 @@ var (
 		nil,
 	)
 
-	nodeNfConntrackList = prometheus.NewDesc(
-		"node_nf_conntrack_entrylist",
-		"",
+	nodeNfConntrackList = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "node",
+			Subsystem: "nf_conntrack",
+			Name:      "entrylist",
+		},
 		[]string{"src", "des", "state", "assured", "protocal", "node", "src_namespace", "src_kind", "des_namespace", "des_kind", "src_ip", "des_ip"},
-		nil,
 	)
 )
 
@@ -115,6 +118,12 @@ func main() {
 	}
 
 	prometheus.MustRegister(ctk)
+	go func() {
+		for {
+			ctk.collectConntrackList()
+			time.Sleep(60 * time.Second)
+		}
+	}()
 	server := http.NewServeMux()
 	server.Handle("/metrics", promhttp.Handler())
 	server.HandleFunc("/debug/pprof/", pprof.Index)
@@ -135,9 +144,9 @@ type Conntrack struct {
 }
 
 func (o *Conntrack) Describe(ch chan<- *prometheus.Desc) {
+	nodeNfConntrackList.Describe(ch)
 	ch <- nodeNfConntrackMax
 	ch <- nodeNfConntrackCount
-	ch <- nodeNfConntrackList
 	for _, des := range o.StatMetrics {
 		ch <- des
 	}
@@ -152,24 +161,24 @@ type label struct {
 }
 
 func (o *Conntrack) Collect(ch chan<- prometheus.Metric) {
+	now := time.Now()
+	defer func() {
+		fmt.Printf("collect nfconntrack stat end(%v)\n", time.Since(now))
+	}()
 	ch <- prometheus.MustNewConstMetric(nodeNfConntrackMax, prometheus.GaugeValue,
 		float64(conntrack.GetUint32FromFile(nfConntrackMax)), o.NodeName)
 	ch <- prometheus.MustNewConstMetric(nodeNfConntrackCount, prometheus.GaugeValue,
 		float64(conntrack.GetUint32FromFile(nfConntrackCount)), o.NodeName)
+	o.collectConntrackStat(ch)
+	// Use asynchronous method, otherwise promethus may call / metrics timeout
+	nodeNfConntrackList.Collect(ch)
+}
 
-	res, err := conntrack.Stat(nfConntrackStat)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	for _, stat := range res.Items {
-		statMap := toMap(stat)
-		for name, des := range o.StatMetrics {
-			ch <- prometheus.MustNewConstMetric(des, prometheus.CounterValue,
-				statMap[name], o.NodeName, strconv.Itoa(stat.Id))
-		}
-	}
-
+func (o *Conntrack) collectConntrackList() {
+	now := time.Now()
+	defer func() {
+		fmt.Printf("collect conntrack list end(%v)\n", time.Since(now))
+	}()
 	entryList, err := conntrack.GetConnections(nfConntrackList)
 	if err != nil {
 		log.Fatalln(err)
@@ -206,8 +215,22 @@ func (o *Conntrack) Collect(ch chan<- prometheus.Metric) {
 			dstNamespace = dstRes.Namespace
 			dstKind = dstRes.Kind
 		}
-		ch <- prometheus.MustNewConstMetric(nodeNfConntrackList, prometheus.GaugeValue,
-			float64(len(entries)), src, dst, label.State, label.Assured, label.Protocal, o.NodeName, srcNamespace, srcKind, dstNamespace, dstKind, label.Src, label.Dst)
+		nodeNfConntrackList.WithLabelValues(src, dst, label.State, label.Assured, label.Protocal, o.NodeName, srcNamespace, srcKind, dstNamespace, dstKind, label.Src, label.Dst).Set(float64(len(entries)))
+	}
+}
+
+func (o *Conntrack) collectConntrackStat(ch chan<- prometheus.Metric) {
+	res, err := conntrack.Stat(nfConntrackStat)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	for _, stat := range res.Items {
+		statMap := toMap(stat)
+		for name, des := range o.StatMetrics {
+			ch <- prometheus.MustNewConstMetric(des, prometheus.CounterValue,
+				statMap[name], o.NodeName, strconv.Itoa(stat.Id))
+		}
 	}
 }
 

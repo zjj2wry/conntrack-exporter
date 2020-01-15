@@ -1,7 +1,7 @@
 REGISTRY = registry.qtt6.cn/paas-dev
 
 build:
-	GOOS=linux GOARCH=amd64 go build -v -o conntrack-exporter main.go
+	GOOS=linux GOARCH=amd64 go build -o conntrack-exporter -v main.go 
 
 docker:
 	docker build -t $(REGISTRY)/conntrack:latest . -f Dockerfile

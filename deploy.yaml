@@ -30,10 +30,10 @@ spec:
           privileged: true
         resources:
           limits:
-            cpu: 200m
-            memory: 200Mi
+            cpu: 1000m
+            memory: 500Mi
           requests:
-            cpu: 20m
+            cpu: 200m
             memory: 100Mi
         env:
         - name: NODE_NAME
