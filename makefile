@@ -1,4 +1,4 @@
-REGISTRY := baizhi
+REGISTRY = registry.qtt6.cn/paas-dev
 
 build:
 	GOOS=linux GOARCH=amd64 go build -v -o conntrack-exporter main.go
@@ -13,3 +13,6 @@ deploy:
 
 prune:
 	kubectl delete -f deploy.yaml -n monitoring
+
+top:
+	kubectl top pod -n monitoring -l k8s-app=conntrack-exporter 

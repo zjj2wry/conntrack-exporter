@@ -63,7 +63,7 @@ var (
 	nodeNfConntrackList = prometheus.NewDesc(
 		"node_nf_conntrack_entrylist",
 		"",
-		[]string{"src", "des", "state", "assured", "protocal", "node"},
+		[]string{"src", "des", "state", "assured", "protocal", "node", "src_namespace", "src_kind", "des_namespace", "des_kind", "src_ip", "des_ip"},
 		nil,
 	)
 )
@@ -89,10 +89,14 @@ func main() {
 
 	factory := informers.NewSharedInformerFactory(clientset, 0)
 	ep := factory.Core().V1().Endpoints()
+	node := factory.Core().V1().Nodes()
+	svc := factory.Core().V1().Services()
+
 	stop := make(chan struct{})
 
-	ctl := controller.NewIPAliasController(ep)
-	go ctl.Run(1, stop)
+	ctrl := controller.NewIPAliasController(ep, svc, node)
+	go ctrl.Run(1, stop)
+	factory.Start(stop)
 
 	statMetricsMap := make(map[string]*prometheus.Desc, 0)
 	for _, metricsName := range statMetrics {
@@ -107,6 +111,7 @@ func main() {
 	ctk := &Conntrack{
 		NodeName:    nodeName,
 		StatMetrics: statMetricsMap,
+		Ctrl:        ctrl,
 	}
 
 	prometheus.MustRegister(ctk)
@@ -126,6 +131,7 @@ func main() {
 type Conntrack struct {
 	NodeName    string
 	StatMetrics map[string]*prometheus.Desc
+	Ctrl        *controller.IPAliasController
 }
 
 func (o *Conntrack) Describe(ch chan<- *prometheus.Desc) {
@@ -182,8 +188,26 @@ func (o *Conntrack) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	for label, entries := range entryMap {
+		srcRes := o.Ctrl.Get(label.Src)
+		src := label.Src
+		srcNamespace := ""
+		srcKind := ""
+		if srcRes != nil {
+			src = srcRes.Name
+			srcNamespace = srcRes.Namespace
+			srcKind = srcRes.Kind
+		}
+		dstRes := o.Ctrl.Get(label.Dst)
+		dst := label.Dst
+		dstNamespace := ""
+		dstKind := ""
+		if dstRes != nil {
+			dst = dstRes.Name
+			dstNamespace = dstRes.Namespace
+			dstKind = dstRes.Kind
+		}
 		ch <- prometheus.MustNewConstMetric(nodeNfConntrackList, prometheus.GaugeValue,
-			float64(len(entries)), label.Src, label.Dst, label.State, label.Assured, label.Protocal, o.NodeName)
+			float64(len(entries)), src, dst, label.State, label.Assured, label.Protocal, o.NodeName, srcNamespace, srcKind, dstNamespace, dstKind, label.Src, label.Dst)
 	}
 }
 

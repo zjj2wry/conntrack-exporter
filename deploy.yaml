@@ -16,7 +16,7 @@ spec:
       tolerations:
       - operator: Exists
       containers:
-      - image: baizhi/conntrack:latest
+      - image: registry.qtt6.cn/paas-dev/conntrack:latest
         securityContext:
           privileged: true
         resources:
@@ -55,7 +55,8 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: view
+  # TODO: set need min role
+  name: cluster-admin
 subjects:
 - kind: ServiceAccount
   name: conntrack
