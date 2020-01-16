@@ -11,11 +11,9 @@ import (
 	"time"
 
 	"github.com/cmattoon/conntrackr/conntrack"
-	"github.com/mdlayher/netlink"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	conntrack2 "github.com/ti-mo/conntrack"
-	"github.com/ti-mo/netfilter"
 	"github.com/zjj2wry/conntrack-exporter/controller"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -30,7 +28,11 @@ const (
 )
 
 var (
-	kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	kubeconfig           = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	contrackReadBufSize  = flag.Int("conntrack-read-buf-size", 4086*1024, "conntrack read buf size")
+	contrackEventBufSize = flag.Int64("conntrack-event-buf-size", 1024*1024, "conntrack event buf size")
+	contrackEventWorker  = flag.Int("conntrack-event-worker", 1, "conntrack event worker")
+
 	statMetrics = []string{
 		"entries",
 		"searched",
@@ -122,8 +124,13 @@ func main() {
 
 	prometheus.MustRegister(ctk)
 
-	ctk.collectConntrackList()
-	ctk.event()
+	// ctk.collectConntrackList()
+	go func() {
+		for {
+			ctk.event()
+			time.Sleep(120 * time.Second)
+		}
+	}()
 
 	server := http.NewServeMux()
 	server.Handle("/metrics", promhttp.Handler())
@@ -183,6 +190,8 @@ func (o *Conntrack) collectConntrackList() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	fmt.Printf("contrack connections length(%v)\n", len(entryList.Items))
 
 	entryMap := make(map[label][]conntrack.Entry, 0)
 	for _, entry := range entryList.Items {
@@ -261,51 +270,92 @@ func toMap(stat *conntrack.StatResult) map[string]float64 {
 }
 
 func (o *Conntrack) event() {
+	now := time.Now()
+	defer func() {
+		fmt.Printf("list all contrack(%v)\n", time.Since(now))
+	}()
+
 	// Open a Conntrack connection.
 	c, err := conntrack2.Dial(nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Make a buffered channel to receive event updates on.
-	evCh := make(chan conntrack2.Event, 1024)
-
-	// Listen for all Conntrack and Conntrack-Expect events with 4 decoder goroutines.
-	// All errors caught in the decoders are passed on channel errCh.
-	_, err = c.Listen(evCh, 4, []netfilter.NetlinkGroup{netfilter.GroupCTNew, netfilter.GroupCTDestroy})
+	err = c.SetReadBuffer(*contrackReadBufSize)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Listen to Conntrack events from all network namespaces on the system.
-	err = c.SetOption(netlink.ListenAllNSID, true)
+	flows, err := c.Dump()
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Start a goroutine to print all incoming messages on the event channel.
-	go func() {
-		for {
-			e := <-evCh
-			switch e.Type {
-			case conntrack2.EventNew:
-				src := e.Flow.TupleOrig.IP.SourceAddress.String()
-				des := e.Flow.TupleOrig.IP.DestinationAddress.String()
-				protocal := protoLookup(e.Flow.TupleOrig.Proto.Protocol)
-				nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(src, des, protocal)...).Inc()
-			// case conntrack2.EventNew:
-
-			case conntrack2.EventDestroy:
-				src := e.Flow.TupleOrig.IP.SourceAddress.String()
-				des := e.Flow.TupleOrig.IP.DestinationAddress.String()
-				protocal := protoLookup(e.Flow.TupleOrig.Proto.Protocol)
-				nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(src, des, protocal)...).Dec()
-
-			default:
-				fmt.Printf("I don't know about type %v", e.Type)
-			}
+	fmt.Printf("contrack flow length(%v)\n", len(flows))
+	entryMap := make(map[label][]conntrack2.Flow, 0)
+	for _, flow := range flows {
+		key := label{
+			Src:      flow.TupleOrig.IP.SourceAddress.String(),
+			Dst:      flow.TupleOrig.IP.DestinationAddress.String(),
+			Protocal: protoLookup(flow.TupleOrig.Proto.Protocol),
 		}
-	}()
+		entryMap[key] = append(entryMap[key], flow)
+	}
+
+	for label, entries := range entryMap {
+		nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(label.Src, label.Dst, label.Protocal)...).Set(float64(len(entries)))
+	}
+
+	// todo: how watch event?
+	// The prd environment has 14w + conntrack entries. When watching events,
+	// it will eat a lot of cpu, and it needs to be restarted continuously, otherwise it will fill up buf.
+
+	// for _,flow := range flows{
+	// 	src := e.Flow.TupleOrig.IP.SourceAddress.String()
+	// 	des := e.Flow.TupleOrig.IP.DestinationAddress.String()
+	// 	protocal := protoLookup(e.Flow.TupleOrig.Proto.Protocol)
+	// 	nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(src, des, protocal)...).Inc()
+	// }
+	/*
+		// Listen to Conntrack events from all network namespaces on the system.
+		err = c.SetOption(netlink.ListenAllNSID, true)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// Make a buffered channel to receive event updates on.
+		evCh := make(chan conntrack2.Event, *contrackEventBufSize)
+
+		// Listen for all Conntrack and Conntrack-Expect events with 4 decoder goroutines.
+		// All errors caught in the decoders are passed on channel errCh.
+		errCh, err := c.Listen(evCh, uint8(*contrackEventWorker), []netfilter.NetlinkGroup{netfilter.GroupCTNew, netfilter.GroupCTDestroy})
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Start a goroutine to print all incoming messages on the event channel.
+		go func() {
+			for {
+				select {
+				case e := <-evCh:
+					switch e.Type {
+					case conntrack2.EventNew:
+						src := e.Flow.TupleOrig.IP.SourceAddress.String()
+						des := e.Flow.TupleOrig.IP.DestinationAddress.String()
+						protocal := protoLookup(e.Flow.TupleOrig.Proto.Protocol)
+						nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(src, des, protocal)...).Inc()
+					case conntrack2.EventDestroy:
+						src := e.Flow.TupleOrig.IP.SourceAddress.String()
+						des := e.Flow.TupleOrig.IP.DestinationAddress.String()
+						protocal := protoLookup(e.Flow.TupleOrig.Proto.Protocol)
+						nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(src, des, protocal)...).Dec()
+					default:
+						fmt.Printf("I don't know about type %v", e.Type)
+					}
+				case err = <-errCh:
+					panic(err)
+				}
+			}
+		}()
+	*/
 }
 
 // protoLookup translates a protocol integer into its string representation.

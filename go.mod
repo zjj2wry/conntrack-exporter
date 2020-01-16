@@ -4,6 +4,10 @@ go 1.12
 
 replace github.com/cmattoon/conntrackr => github.com/zjj2wry/conntrackr v0.1.4
 
+replace github.com/ti-mo/conntrack => github.com/zjj2wry/conntrack v0.1.0
+
+replace github.com/ti-mo/netfilter => github.com/zjj2wry/netfilter v0.3.1
+
 require (
 	github.com/cmattoon/conntrackr v0.0.0-20190507024333-e908420c06e3
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b

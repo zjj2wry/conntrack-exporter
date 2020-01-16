@@ -218,31 +218,31 @@ func (o *IPAliasController) syncEndpoint(key string) error {
 	for _, subset := range ep.Subsets {
 		for _, address := range subset.Addresses {
 			// seems not work, how clean stale ip? ip will re-allocate? need clean?
-			if ep.GetDeletionTimestamp() != nil {
-				o.Delete(address.IP)
-			} else {
-				hostNetwork := false
-				if address.NodeName != nil {
-					node, err := o.nodesLister.Get(*address.NodeName)
-					if err != nil {
-						return err
-					}
-					if node.Status.Addresses[0].Address == address.IP {
-						o.Set(address.IP, &Resource{
-							Kind: "Node",
-							Name: *address.NodeName,
-						})
-						hostNetwork = true
-					}
+			// if ep.GetDeletionTimestamp() != nil {
+			// 	o.Delete(address.IP)
+			// } else {
+			hostNetwork := false
+			if address.NodeName != nil {
+				node, err := o.nodesLister.Get(*address.NodeName)
+				if err != nil {
+					return err
 				}
-				if address.TargetRef != nil && !hostNetwork {
+				if node.Status.Addresses[0].Address == address.IP {
 					o.Set(address.IP, &Resource{
-						Kind:      address.TargetRef.Kind,
-						Name:      address.TargetRef.Name,
-						Namespace: address.TargetRef.Namespace,
+						Kind: "Node",
+						Name: *address.NodeName,
 					})
+					hostNetwork = true
 				}
 			}
+			if address.TargetRef != nil && !hostNetwork {
+				o.Set(address.IP, &Resource{
+					Kind:      address.TargetRef.Kind,
+					Name:      address.TargetRef.Name,
+					Namespace: address.TargetRef.Namespace,
+				})
+			}
+			// }
 		}
 	}
 

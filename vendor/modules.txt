@@ -40,10 +40,15 @@ github.com/imdario/mergo
 github.com/json-iterator/go
 # github.com/matttproud/golang_protobuf_extensions v1.0.1
 github.com/matttproud/golang_protobuf_extensions/pbutil
+# github.com/mdlayher/netlink v1.0.1-0.20191210152442-a1644773bc99
+github.com/mdlayher/netlink
+github.com/mdlayher/netlink/nlenc
 # github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd
 github.com/modern-go/concurrent
 # github.com/modern-go/reflect2 v1.0.1
 github.com/modern-go/reflect2
+# github.com/pkg/errors v0.8.1
+github.com/pkg/errors
 # github.com/prometheus/client_golang v1.3.0
 github.com/prometheus/client_golang/prometheus
 github.com/prometheus/client_golang/prometheus/promhttp
@@ -60,9 +65,14 @@ github.com/prometheus/procfs/internal/fs
 github.com/prometheus/procfs/internal/util
 # github.com/spf13/pflag v1.0.5
 github.com/spf13/pflag
+# github.com/ti-mo/conntrack v0.0.0-20191219100429-c9b176489c1a => github.com/zjj2wry/conntrack v0.1.0
+github.com/ti-mo/conntrack
+# github.com/ti-mo/netfilter v0.3.0 => github.com/zjj2wry/netfilter v0.3.1
+github.com/ti-mo/netfilter
 # golang.org/x/crypto v0.0.0-20190820162420-60c769a6c586
 golang.org/x/crypto/ssh/terminal
-# golang.org/x/net v0.0.0-20191004110552-13f9640d40b9
+# golang.org/x/net v0.0.0-20191209160850-c0dbc17a3553
+golang.org/x/net/bpf
 golang.org/x/net/http2
 golang.org/x/net/http/httpguts
 golang.org/x/net/http2/hpack
@@ -73,8 +83,8 @@ golang.org/x/net/context
 golang.org/x/oauth2
 golang.org/x/oauth2/internal
 # golang.org/x/sys v0.0.0-20191220142924-d4481acd189f
-golang.org/x/sys/windows
 golang.org/x/sys/unix
+golang.org/x/sys/windows
 # golang.org/x/text v0.3.2
 golang.org/x/text/secure/bidirule
 golang.org/x/text/unicode/bidi
