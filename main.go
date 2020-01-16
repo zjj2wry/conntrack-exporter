@@ -33,6 +33,21 @@ var (
 	contrackEventBufSize = flag.Int64("conntrack-event-buf-size", 1024*1024, "conntrack event buf size")
 	contrackEventWorker  = flag.Int("conntrack-event-worker", 1, "conntrack event worker")
 
+	tcpState = []string{
+		"NONE",
+		"SYN_SENT",
+		"SYN_RECV",
+		"ESTABLISHED",
+		"FIN_WAIT",
+		"CLOSE_WAIT",
+		"LAST_ACK",
+		"TIME_WAIT",
+		"CLOSE",
+		"LISTEN",
+		"MAX",
+		"IGNORE",
+	}
+
 	statMetrics = []string{
 		"entries",
 		"searched",
@@ -72,7 +87,7 @@ var (
 			Subsystem: "nf_conntrack",
 			Name:      "entrylist",
 		},
-		[]string{"src", "des", "protocal", "node", "src_namespace", "src_kind", "des_namespace", "des_kind", "src_ip", "des_ip"},
+		[]string{"src", "des", "protocal", "node", "src_namespace", "src_kind", "des_namespace", "des_kind", "src_ip", "des_ip", "state"},
 	)
 )
 
@@ -298,16 +313,20 @@ func (o *Conntrack) event() {
 			Dst:      flow.TupleOrig.IP.DestinationAddress.String(),
 			Protocal: protoLookup(flow.TupleOrig.Proto.Protocol),
 		}
+		if flow.ProtoInfo.TCP != nil {
+			key.State = tcpState[flow.ProtoInfo.TCP.State]
+		}
+
 		entryMap[key] = append(entryMap[key], flow)
 	}
 
 	for label, entries := range entryMap {
-		nodeNfConntrackList.WithLabelValues(o.conntrackListLabels(label.Src, label.Dst, label.Protocal)...).Set(float64(len(entries)))
+		nodeNfConntrackList.WithLabelValues(append(o.conntrackListLabels(label.Src, label.Dst, label.Protocal), label.State)...).Set(float64(len(entries)))
 	}
 
-	// todo: how watch event?
+	// TODO: how watch event?
 	// The prd environment has 14w + conntrack entries. When watching events,
-	// it will eat a lot of cpu, and it needs to be restarted continuously, otherwise it will fill up buf.
+	// it will eat a lot of cpu(200m ~ 1core), and it needs to be restarted continuously, otherwise it will fill up buf size.
 
 	// for _,flow := range flows{
 	// 	src := e.Flow.TupleOrig.IP.SourceAddress.String()
